@@ -10,6 +10,15 @@ from matplotlib.patches import Polygon
 from PIL import Image
 from io import BytesIO
 
+
+def check_exists(path):
+    try:
+        if not os.path.exists(path):
+            os.makedirs(path)
+    except Exception as e:
+        raise e
+
+
 endpoint = "https://westcentralus.api.cognitive.microsoft.com/vision"
 
 key_1 = "bd0ced714ad24db8b8c7fb110c18aa77"
@@ -22,54 +31,75 @@ api_key = key_1
 text_recognition_url = endpoint + "/vision/v3.0-preview/read/analyze"
 
 # Set image_url to the URL of an image that you want to recognize.
-image_url = "image path"
+list_image_url = "image path"
+path_save_ann = "extract_hand_text/annotation"
+path_save_words = "extract_hand_text/words_bboxs"
+check_exists(path_save_ann)
+check_exists(path_save_words)
 
-# Set the langauge that you want to recognize. The value can be "en" for English, and "vi" for Vietnamese
-# more info: https://docs.microsoft.com/en-us/azure/cognitive-services/translator/language-support
-language = "vi"
+for image_url in list_image_url:
+    # Set the langauge that you want to recognize. The value can be "en" for English, and "vi" for Vietnamese
+    # more info: https://docs.microsoft.com/en-us/azure/cognitive-services/translator/language-support
+    language = "vi"
+    headers = {'Ocp-Apim-Subscription-Key': api_key}
+    # Read the image into a byte array
+    image_data = open(image_url, "rb").read()
+    response = requests.post(
+        text_recognition_url, headers=headers, data=image_data, params={'language': language})
+    response.raise_for_status()
 
-headers = {'Ocp-Apim-Subscription-Key': api_key}
-data = {'url': image_url}
-response = requests.post(
-    text_recognition_url, headers=headers, json=data, params={'language': language})
-response.raise_for_status()
+    # Extracting text requires two API calls: One call to submit the
+    # image for processing, the other to retrieve the text found in the image.
 
-# Extracting text requires two API calls: One call to submit the
-# image for processing, the other to retrieve the text found in the image.
+    # Holds the URI used to retrieve the recognized text.
+    operation_url = response.headers["Operation-Location"]
 
-# Holds the URI used to retrieve the recognized text.
-operation_url = response.headers["Operation-Location"]
+    # The recognized text isn't immediately available, so poll to wait for completion.
+    analysis = {}
+    poll = True
+    while (poll):
+        response_final = requests.get(
+            response.headers["Operation-Location"], headers=headers)
+        analysis = response_final.json()
+        
+        print(json.dumps(analysis, indent=4))
 
-# The recognized text isn't immediately available, so poll to wait for completion.
-analysis = {}
-poll = True
-while (poll):
-    response_final = requests.get(
-        response.headers["Operation-Location"], headers=headers)
-    analysis = response_final.json()
-    
-    print(json.dumps(analysis, indent=4))
+        time.sleep(1)
+        if ("analyzeResult" in analysis):
+            poll = False
+        if ("status" in analysis and analysis['status'] == 'failed'):
+            poll = False
 
-    time.sleep(1)
+    #
+    image_name = image_url.split("/")[-1]
+    _n = os.path.splitext(image_name)[0]
+    # image to write result
+    img = cv2.imread(image_url)
+    word_image = img.copy()
+
     if ("analyzeResult" in analysis):
-        poll = False
-    if ("status" in analysis and analysis['status'] == 'failed'):
-        poll = False
+        # Extract the recognized text, with bounding boxes.
+        lines = analysis["analyzeResult"]["readResults"][0]
+        with open("{}/{}.txt".format(path_save_ann, _n), 'w') as f:
+            for line in lines:
+                for word in line["words"]:
+                    text = word["text"]
+                    bbox = word["boundingBox"]
+                    x, y, xx, yy = int(bbox[0]), int(bbox[1]), int(bbox[4]), int(bbox[5])
+                    word_rect = cv2.rectangle(word_image, (x, y), (xx, yy), (255, 0, 255), 2)
+                    f.write(text)
+                    f.write("\t")
+                    f.write(str(x))
+                    f.write("\t")
+                    f.write(str(y))
+                    f.write("\t")
+                    f.write(str(xx))
+                    f.write("\t")
+                    f.write(str(yy))
+                    f.write("\n")
+        cv2.imwrite('{}/word_rect_{}.jpg'.format(path_save_words, _n), word_rect)
 
-polygons = []
-if ("analyzeResult" in analysis):
-    # Extract the recognized text, with bounding boxes.
-    polygons = [(line["boundingBox"], line["text"])
-                for line in analysis["analyzeResult"]["readResults"][0]["lines"]]
 
-# Display the image and overlay it with the extracted text.
-image = Image.open(BytesIO(requests.get(image_url).content))
-ax = plt.imshow(image)
-for polygon in polygons:
-    vertices = [(polygon[0][i], polygon[0][i+1])
-                for i in range(0, len(polygon[0]), 2)]
-    text = polygon[1]
-    patch = Polygon(vertices, closed=True, fill=False, linewidth=2, color='y')
-    ax.axes.add_patch(patch)
-    plt.text(vertices[0][0], vertices[0][1], text, fontsize=20, va="top")
-plt.show()
+
+        
+
